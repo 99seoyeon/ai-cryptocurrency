@@ -1,0 +1,47 @@
+import requests
+import csv
+import time
+import pandas as pd
+import os
+from datetime import datetime
+
+total_running_time = 24*60*60
+start_time = time.time()
+
+if not os.path.exists('./sorted'):
+    os.mkdir('./sorted')
+    
+header = 'price   |quantity|Type|timestamp'
+with open('./all/bithumb_orderbook.csv', mode='w', newline='') as f:
+    f.write(header + '\n')
+    
+while True:
+    # 判断程序是否已经运行了指定的时间
+    if time.time() - start_time > total_running_time:
+        break
+        
+    response = requests.get('https://api.bithumb.com/public/orderbook/BTC_KRW/?count=5')
+    book = response.json()
+    data = book['data']
+    
+    # 将asks和bids的价格, asks和bids的数量作为两列，并新建Type列区分asks和bids
+    bids = pd.DataFrame(data['bids'], columns=['price', 'quantity'])
+    bids['Type'] = 0  # 添加 Type 列并设置值为 0，代表 bids
+    asks = pd.DataFrame(data['asks'], columns=['price', 'quantity'])
+    asks['Type'] = 1  # 添加 Type 列并设置值为 1，代表 asks
+    
+    # 使用 merge 合并 asks 和 bids
+    df = pd.merge(bids, asks, how='outer')
+    
+    # 创建包含当前时间的 DataFrame，并将 timestamp 值的前五位添加到时间后面
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    time_df = pd.DataFrame({'time': [now] * len(df)})
+    
+    # 合并时间和 asks/bids 数据的 DataFrame
+    df = pd.concat([df, time_df], axis=1)
+    
+     # 格式化输出并保存到 CSV 文件中
+    df.to_csv('./all/bithumb_orderbook.csv', index=False, header=False, mode='a', sep='|')
+
+
+    time.sleep(1)
