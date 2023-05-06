@@ -1,0 +1,14 @@
+import pandas as pd
+import numpy as np
+
+df = pd.read_csv('bithumb_orderbook.csv', sep='|', header=None, names=['price', 'quantity', 'type', 'timestamp'], skiprows=1)
+print (df)
+
+df_0 = df[df['type'] == 0]
+df_1 = df[df['type'] == 1]
+
+df_0_sorted = df_0.sort_values(by='price', ascending=False)
+df_1_sorted = df_1.sort_values(by='price', ascending=True)
+df_merged = pd.concat([df_0_sorted, df_1_sorted], ignore_index=True)
+#print (df_merged)
+df_merged.to_csv('./all/all.csv', index=False, header= 'price   |quantity|Type|timestamp', sep='|')
