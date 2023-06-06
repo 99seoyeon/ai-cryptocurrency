@@ -1,0 +1,218 @@
+import pandas as pd
+import timeit
+import csv
+
+# 해당 파일 가져오기 - 이전에 수집한 24시간 데이터
+dr = pd.read_csv('./all.csv')
+
+# 'price|quantity|type|timestamp' 열을 파이프 문자('|')를 기준으로 분할하여 개별 열로 만들기
+dr[['price', 'quantity', 'type', 'timestamp']] = dr['price|quantity|type|timestamp'].str.split('|', expand=True)
+dr = dr[['price', 'quantity', 'type', 'timestamp']] #필요한 열만 저장
+
+# 'price', 'quantity', 'type'열의 데이터를 숫자 형식으로 변환
+dr['price'] = pd.to_numeric(dr['price'])
+dr['quantity'] = pd.to_numeric(dr['quantity'])
+dr['type'] = pd.to_numeric(dr['type'])
+# 'timestamp' 열의 데이터를 날짜/시간 형식으로 변환
+dr['timestamp'] = pd.to_datetime(dr['timestamp'])
+
+# 'timestamp' 기준으로 오름차순 정렬 - 데이터 프레임 준비 완
+ds = dr.sort_values('timestamp', ascending=True)
+
+# 필요한 함수 정의
+# bid_top
+def get_bid_top_0(df):
+    result = df[df['type'] == 0].groupby('timestamp')['price'].idxmax()
+    result_rows = df.loc[result]
+    return result_rows
+# ask_top
+def get_ask_top_1(df):
+    result = df[df['type'] == 1].groupby('timestamp')['price'].idxmin()
+    result_rows = df.loc[result]
+    return result_rows
+
+# bid_mean
+def get_bid_mean_0(df):
+    result = df[df['type'] == 0].groupby('timestamp')['price'].mean().reset_index()
+    return result
+# ask_mean
+def get_ask_mean_1(df):
+    result = df[df['type'] == 1].groupby('timestamp')['price'].mean().reset_index()
+    return result
+
+# mid_price_mid
+def get_mid_price_mid (ds):
+    # top price 구하기 - 함수사용
+    bid_top = get_bid_top_0(ds)
+    ask_top = get_ask_top_1(ds)
+    # 각각 구한 top price 리스트를 합친다
+    tp = pd.concat([bid_top, ask_top], ignore_index=True)
+    # timestamp 기준으로 정렬
+    ts = tp.sort_values('timestamp', ascending=True)
+    # 계산된 미드값 따로 저장
+    mid_price = ts.reset_index().groupby('timestamp')['price'].mean().reset_index()
+    # mid-price를 DataFrame으로 반환
+    return mid_price
+    
+# mid_price_wt
+def get_mid_price_wt(ds):
+    # 'bid_mean','ask_mean' 구하기 - 함수사용
+    bid_mean = get_bid_mean_0(ds)
+    ask_mean = get_ask_mean_1(ds)
+    # 'bid_mean' DataFrame의 'price' 열 이름 변경
+    bid_mean.rename(columns={'price': 'bid_mean'}, inplace=True)
+    # 'ask_mean' DataFrame의 'price' 열 이름 변경
+    ask_mean.rename(columns={'price': 'ask_mean'}, inplace=True)
+    # 'timestamp'을 기준으로 'bid_mean'과 'ask_mean'이 합쳐진 새로운 DataFrame 만들기
+    total_mean = pd.merge(bid_mean, ask_mean, on='timestamp')
+    # 최종 계산된 'wt'의 열 만들기
+    total_mean['wt'] = 0.5 * (total_mean['bid_mean'] + total_mean['ask_mean'])
+    # 'wt' 열을 포함한 DataFrame 반환
+    mid_price_wt = total_mean[['timestamp', 'wt']]
+    
+    return mid_price_wt
+
+
+# min_price_mkt - 분자와 분모를 각각 구한 다음 계산
+# mkt 분자
+def get_mid_price_mkt_num(ts):
+    # 계산한 분자 값을 저장할 새로운 DataFrame 생성
+    numerator_df = pd.DataFrame(columns=['timestamp', 'bid_price_ask_quantity', 'ask_price_bid_quantity'])
+    for timestamp, group in ts.groupby('timestamp'):
+        bid_price = group[group['type'] == 0]['price'].sum()
+        ask_quantity = group[group['type'] == 1]['quantity'].sum()
+        ask_price = group[group['type'] == 1]['price'].sum()
+        bid_quantity = group[group['type'] == 0]['quantity'].sum()
+        
+        row = {'timestamp': timestamp, 
+               'bid_price_ask_quantity': bid_price * ask_quantity,
+               'ask_price_bid_quantity': ask_price * bid_quantity}
+        
+        numerator_df = pd.concat([numerator_df, pd.DataFrame([row])], ignore_index=True)
+        
+    # 분자값을 DataFrame으로 반환
+    return numerator_df
+
+    
+# mkt 분모
+def get_mid_price_mkt_den(ts):
+    # 계산한 분모 값을 저장할 새로운 데이터프레임 생성
+    denominator_df = ts.reset_index().groupby('timestamp')['quantity'].sum().reset_index()
+    
+    # 분모값을 데이터프레임으로 반환
+    return denominator_df
+
+
+# mid_price_mkt
+def get_mid_price_mkt (ds) :
+    # top price 구하기 - 함수사용
+    bid_top = get_bid_top_0(ds)
+    ask_top = get_ask_top_1(ds)
+    # 각각 구한 top price 리스트를 합친다
+    tp = pd.concat([bid_top, ask_top], ignore_index=True)
+    # timestamp 기준으로 정렬
+    ts = tp.sort_values('timestamp', ascending=True)
+    
+    # 분자 계산
+    mkt_numerator = get_mid_price_mkt_num (ts)
+    # 분모 계산
+    mkt_denominator = get_mid_price_mkt_den (ts)
+    # 분자, 분모 파일 'timestamp'가준으로 합치기
+    mkt_att = pd.merge(mkt_numerator, mkt_denominator, on='timestamp') # 계산에 필요한 데이터 준비 완
+
+    # 새로운 열을 생성해서 계산된 mkt값 저장
+    mkt_att['mkt'] = (mkt_att['bid_price_ask_quantity'] + mkt_att['ask_price_bid_quantity'])/mkt_att['quantity']
+
+    # 새로운 리스트를 생성해서 저장된 mkt값만 따로 저장
+    mid_price_mkt = mkt_att[['timestamp', 'mkt']].values.tolist()
+    
+    # mkt 값을 데이터프레임으로 반환
+    return mkt_att[['timestamp', 'mkt']]
+
+# 선택된 mid-type 실행
+def get_mid_price(num,ds):
+    # 선택된 mid-type에 따라 미드값 계산실행
+    if num == 1:
+        mid = get_mid_price_mid (ds)
+        mid.rename(columns={'mid': 'price'}, inplace=True)
+        return mid
+    elif num == 2:
+        mid = get_mid_price_wt (ds)
+        mid.rename(columns={'wt': 'price'}, inplace=True)
+        return mid
+    elif num == 3:
+        mid = get_mid_price_mkt (ds)
+        mid.rename(columns={'mkt': 'price'}, inplace=True)
+        return mid
+    else:
+        print("잘못 된 미드값을 선택했습니다. 숫자 1,2,3 중에 선택해주세요.")  # num이 1, 2, 3이 아닐 때 실행되는 코드
+
+# 미드타입 전부 합쳐서 csv 파일로 저장
+def get_mid_price_all(ds):
+    mid1 = get_mid_price_mid (ds)
+    mid2 = get_mid_price_wt (ds)
+    mid3 = get_mid_price_mkt (ds)
+    mid_total = pd.merge(mid1, mid2, on='timestamp')
+    mid_total = pd.merge(mid_total, mid3, on='timestamp')
+    # 저장할 파일 경로
+    output_file = 'mid_total.csv'
+    # 데이터프레임을 CSV 파일로 저장
+    mid_total.to_csv(output_file, index=False)
+
+# askQty, bidQty # askPx, bidPx 계산
+def get_book_price_par(ratio, ds):
+    bpp = ds.copy()  # ds 데이터프레임을 복사하여 bpp로 사용
+    bpp['qr'] = bpp['quantity'] * ratio # quantity에 ratio를 곱해서 새로운 열을 만듭니다
+    bpp['pqr'] = bpp['price'] * bpp['qr'] # price, quantity, ratio를 곱해서 새로운 열을 만듭니다
+    
+    # 같은 타입끼리 묶은 값 계산
+    grouped = bpp.groupby('timestamp')
+    values = grouped.apply(lambda x: pd.Series({
+        'bidQty': x[x['type'] == 0]['qr'].sum(),
+        'bidPx': x[x['type'] == 0]['pqr'].sum(),
+        'askQty': x[x['type'] == 1]['qr'].sum(),
+        'askPx': x[x['type'] == 1]['pqr'].sum()
+    }))
+    return values
+
+# book_price 계산
+def get_book_price(bip):
+    bp = bip.copy()
+    bp['book_price'] = (((bp['askQty'] * bp['bidPx']) / bp['bidQty']) + ((bp['bidQty'] * bp['askPx']) / bp['askQty'])) / (bp['bidQty'] + bp['askQty'])
+    bp = bp.reset_index()  # 인덱스 재설정
+    bp = bp[['timestamp', 'book_price']]
+    return bp
+
+# book_imbalance 계산
+def get_book_imbalance (ratio,level,interval,mid_type,ds):
+    bpp = get_book_price_par(ratio, ds) # book-price-parameter 계산
+    bp = get_book_price(bpp) # book-price 계산
+    mid = get_mid_price(mid_type, ds) # 미드값을 파일로 저장한 후 불러오기 - 함수사용
+    bi = pd.merge(bp, mid, on='timestamp')
+    bi['book_imbalance'] = (bi['book_price'] - bi['price']) / interval
+    bi = bi[['timestamp', 'book_imbalance']]
+    return bi
+
+get_mid_price_all(ds)
+
+book1 = get_book_imbalance(0.1, 5, 1, 2, ds)
+book1.rename(columns={'book_imbalance': '0,1,5,1,2'}, inplace=True)
+
+book2 = get_book_imbalance(0.1, 5, 2, 2, ds)
+book2.rename(columns={'book_imbalance': '0,1,5,2,2'}, inplace=True)
+
+book3 = get_book_imbalance(0.2, 5, 1, 3, ds)
+book3.rename(columns={'book_imbalance': '0,2,5,1,3'}, inplace=True)
+
+book4 = get_book_imbalance(0.2, 5, 2, 3, ds)
+book4.rename(columns={'book_imbalance': '0,2,5,2,3'}, inplace=True)
+
+book_total = pd.merge(book1, book2, on='timestamp')
+book_total = pd.merge(book_total, book3, on='timestamp')
+book_total = pd.merge(book_total, book4, on='timestamp')
+book_total.to_csv('book_imbalance.csv', index=False)
+
+mid_all = pd.read_csv('./mid_total.csv')
+book_imbalance_all = pd.read_csv('./book_imbalance.csv')
+result_total = pd.merge(mid_all, book_imbalance_all, on='timestamp')
+result_total.to_csv('result.csv', index=False)
